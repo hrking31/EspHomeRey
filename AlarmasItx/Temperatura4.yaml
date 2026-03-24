@@ -155,7 +155,6 @@ interval:
       - lambda: |-
           float temp = id(temp_sht30).state; 
           float hum  = id(hum_sht30).state;
-
           bool sensor_error = false;
 
            // Detectar lectura inválida
@@ -184,8 +183,8 @@ interval:
 
           // Si hay error en sensor
           if (sensor_error) {
+          if (id(sensor_ok)) {
           id(sensor_ok) = false;
-          if (!std::isnan(id(last_temp_sent))) {
             id(temp_to_send) = NAN;
             id(hum_to_send) = NAN;
             id(last_temp_sent) = NAN;
@@ -194,13 +193,15 @@ interval:
           return;
           }
 
-          id(sensor_ok) = true;
-
-          if (std::isnan(id(last_temp_sent)) || fabs(temp - id(last_temp_sent)) >= 0.5) {
+           if (!id(sensor_ok) || std::isnan(id(last_temp_sent)) || fabs(temp - id(last_temp_sent)) >= 0.5) {
+            id(sensor_ok) = true;
             id(temp_to_send) = temp;
             id(hum_to_send) = hum;
             id(last_temp_sent) = temp;
             id(send_temp_hum).execute();
+
+            id(last_temp) = temp;
+            id(last_temp_change_time) = millis();
             }
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
@@ -243,7 +244,7 @@ interval:
 
                 body: !lambda |-
                   float t = id(temp_sht30).state;
-                  
+
                   if (isnan(t)) return std::string("");
 
                   time_t now = id(esptime).now().timestamp;
