@@ -159,7 +159,6 @@ interval:
       - lambda: |-
           float temp = id(temp_to_send);
           float hum  = id(hum_to_send);
-
           bool sensor_error = false;
 
           // Sensor BLE desconectado
@@ -174,32 +173,27 @@ interval:
 
           // Si hay error
           if (sensor_error) {
-
-            id(sensor_ok) = false;
-
-            if (!std::isnan(id(last_temp_sent))) {
-
-              id(temp_to_send) = NAN;
-              id(hum_to_send)  = NAN;
-              id(last_temp_sent) = NAN;
-
-              id(send_temp_hum).execute();
-            }
-
-            return;
+          if (id(sensor_ok)) {
+          id(sensor_ok) = false;
+            id(temp_to_send) = NAN;
+            id(hum_to_send)  = NAN;
+            id(last_temp_sent) = NAN;
+            id(send_temp_hum).execute();
+          }
+          return;
           }
 
           // Sensor funcionando
-          id(sensor_ok) = true;
-
-          // Enviar solo si cambia ≥ 0.5 °C
-          if (std::isnan(id(last_temp_sent)) ||
-              fabs(temp - id(last_temp_sent)) >= 0.5) {
-
+           if (!id(sensor_ok) || std::isnan(id(last_temp_sent)) || fabs(temp - id(last_temp_sent)) >= 0.5) {
+            id(sensor_ok) = true;
+            id(temp_to_send) = temp;
+            id(hum_to_send) = hum;
             id(last_temp_sent) = temp;
-
             id(send_temp_hum).execute();
-          }
+
+            id(last_temp) = temp;
+            id(last_temp_change_time) = millis();
+            }
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
   - interval: 60s
