@@ -1,0 +1,72 @@
+esphome:
+  name: keys-proxy
+
+esp32:
+  board: esp32-c6-devkitm-1
+  framework:
+    type: esp-idf
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  
+# Enable logging
+logger:
+  level: DEBUG
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+web_server:
+  port: 80
+
+#////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+esp32_ble:
+  max_connections: 4
+
+esp32_ble_tracker:
+  scan_parameters:
+    active: true
+    interval: 1100ms
+    window: 1100ms
+
+ble_client:
+  - mac_address: F0:C2:D3:10:2A:DC
+    id: corne_ble
+
+bluetooth_proxy:
+  active: true
+
+binary_sensor:
+  - platform: status
+    name: "Status BtProxy"
+
+text_sensor:
+  - platform: version
+    name: Version BtProxy
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP BtProxy"
+
+sensor:
+  - platform: uptime
+    name: "UpTime BtProxy"
+    update_interval: 60s
+
+  - platform: ble_client
+    type: characteristic
+    ble_client_id: corne_ble
+    name: "Bateria Corne"
+    service_uuid: "180F"
+    characteristic_uuid: "2A19"
+    notify: true
+    update_interval: 60s
+    unit_of_measurement: "%"
+    device_class: battery
