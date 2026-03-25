@@ -43,17 +43,88 @@ ble_client:
 bluetooth_proxy:
   active: true
 
+substitutions:
+  # Define aquí tu código secreto
+  codigo_secreto: "321"
+
+# Definición de los botones físicos
 binary_sensor:
+  - platform: gpio
+    pin: GPIO1  # Cambia al pin real de tu botón 1
+    name: "Botón 1"
+    on_press:
+      then:
+        - script.execute:
+            id: registrar_presion
+            digito: "1"
+
   - platform: status
     name: "Status BtProxy"
+ 
+            
+  - platform: gpio
+    pin: GPIO2  # Cambia al pin real de tu botón 2
+    name: "Botón 2"
+    on_press:
+      then:
+        - script.execute:
+            id: registrar_presion
+            digito: "2"
 
+  - platform: gpio
+    pin: GPIO3  # Cambia al pin real de tu botón 3
+    name: "Botón 3"
+    on_press:
+      then:
+        - script.execute:
+            id: registrar_presion
+            digito: "3"
+
+# Sensor interno para manejar la lógica de la clave
 text_sensor:
+  - platform: template
+    id: cadena_codigo
+    name: "Estado de Clave"
+    icon: "mdi:key-numeric"
+
   - platform: version
     name: Version BtProxy
 
   - platform: wifi_info
     ip_address:
       name: "IP BtProxy"
+
+# Lógica central del código
+script:
+  - id: registrar_presion
+    parameters:
+      digito: string
+    mode: queued
+    then:
+      - text_sensor.template.publish:
+          id: cadena_codigo
+          state: !lambda |-
+            std::string actual = id(cadena_codigo).state;
+            actual += digito;
+            if (actual.length() > 3) {
+                actual = actual.substr(actual.length() - 3);
+            }
+            return actual;
+      
+      - if:
+          condition:
+            lambda: 'return id(cadena_codigo).state == "${codigo_secreto}";'
+          then:
+            - logger.log: "¡Código Correcto Detectado!"
+            # Enviamos el evento sin el placeholder problemático
+            - homeassistant.event:
+                event: esphome.codigo_valido
+                data:
+                  accion: "acceso_concedido"
+            # Limpiamos el código
+            - text_sensor.template.publish:
+                id: cadena_codigo
+                state: ""
 
 sensor:
   - platform: uptime
@@ -70,3 +141,12 @@ sensor:
     update_interval: 60s
     unit_of_measurement: "%"
     device_class: battery
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: led_interno
+    name: "LED RGB C6"
+    pin: GPIO8
+    num_leds: 1
+    rgb_order: GRB
+    chipset: WS2812
