@@ -1,0 +1,40 @@
+esphome:
+  name: router-thread-c6
+
+esp32:
+  board: esp32-c6-devkitm-1
+  framework:
+    type: esp-idf
+
+network:
+  enable_ipv6: true
+
+openthread:
+  device_type: FTD
+  tlv: 0e080000000000010000000300000f4a0300001935060004001fffe002084fbb312236e11fb00708fd46ef10845ed1720510c13c8d301bde7e64608687c2a1acb3c9030e68612d7468726561642d3662386201026b8b04105d967fcdbc2d54a6547907958b0f2aa70c0402a0f7f8
+  force_dataset: true
+
+sensor:
+  - platform: uptime
+    name: "Uptime Repetidor"
+    
+  - platform: internal_temperature
+    name: "Temperatura Interna C6"
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_key
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+text_sensor:
+  - platform: version
+    name: Version KeysProxy
+
+binary_sensor:
+  - platform: status
+    name: "Status KeysProxy"
