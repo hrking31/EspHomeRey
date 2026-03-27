@@ -1,15 +1,16 @@
 esphome:
-  name: bluetooth-proxy-c6
+  name: bluetooth-proxy-esp32
 
 esp32:
   board: esp32dev
   framework:
-    type: esp-idf
-    version: recommended
+    # type: esp-idf
+     type: arduino
+    # version: recommended
 
 wifi:
-  ssid: !secret wifi_ssid
-  password: !secret wifi_password
+  ssid: Fec
+  password: ferrequipos3125
 
 # Enable logging
 logger:
@@ -32,6 +33,10 @@ http_request:
 
 # -------- VARIABLES --------
 globals:
+  - id: last_temp
+    type: float
+    initial_value: "NAN"
+
   - id: temp_to_send
     type: float
     restore_value: no
@@ -46,6 +51,10 @@ globals:
     type: float
     restore_value: no
     initial_value: "NAN"
+
+  - id: last_temp_change_time
+    type: uint32_t
+    initial_value: "0"
 
   - id: last_ble_packet
     type: uint32_t
@@ -72,11 +81,11 @@ time:
     id: esptime
     timezone: "America/Bogota"
 
-# -------- BLUETOOTH --------
+#-------- BLUETOOTH --------
 esp32_ble_tracker:
   scan_parameters:
     active: false
-    interval: 150ms
+    interval: 1500ms
     window: 100ms
 
   on_ble_service_data_advertise:
