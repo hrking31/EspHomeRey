@@ -2,7 +2,7 @@ esphome:
   name: ac-planta-sbl
 
 esp8266:
-  board: d1_mini_lite
+  board: nodemcuv2
 
 logger:
 
@@ -36,16 +36,22 @@ web_server:
 
 # -------- HTTP --------
 http_request:
-  useragent: esphome/d1mini
+  useragent: esphome/nodemcu
   timeout: 5s
   verify_ssl: false
   id: http_request_sbl
+
+# -------- TIME --------
+time:
+  - platform: sntp
+    id: esptime
+    timezone: "America/Bogota"
 
 #---------- LED ESTADO WIFI -----------
 output:
   - platform: gpio
     pin:
-      number: D4
+      number: 16
       # inverted: true
     id: wifi_led
 
@@ -58,9 +64,9 @@ light:
 binary_sensor:
   - platform: gpio
     pin:
-      number: D1
+      number: 12
       mode: INPUT_PULLUP
-      inverted: true
+      # inverted: true
     id: ac_pin
     name: "AC Estado"
     on_state:
@@ -71,9 +77,9 @@ binary_sensor:
 
   - platform: gpio
     pin:
-      number: D2
+      number: 4
       mode: INPUT_PULLUP
-      inverted: true
+      # inverted: true
     id: planta_pin
     name: "Planta Estado"
     on_state:
@@ -84,7 +90,9 @@ binary_sensor:
             // Planta encendida
             if (nuevo_estado == 1 && id(planta_estado) == 0) {
               id(planta_estado) = 1;
-              id(engine_start_timestamp) = millis();
+              auto now = id(esptime).now();
+              id(engine_start_timestamp) = (uint64_t) now.timestamp * 1000;
+              id(engine_runtime_start) = millis();
             }
 
             // Planta apagada
@@ -92,7 +100,7 @@ binary_sensor:
               id(planta_estado) = 0;
 
               if (id(engine_start_timestamp) > 0) {
-                uint32_t tiempo_trabajado = millis() - id(engine_start_timestamp);
+                uint32_t tiempo_trabajado = millis() - id(engine_runtime_start);
                 id(total_ms_acumulados) += tiempo_trabajado;
                 id(engine_start_timestamp) = 0;
               }
@@ -105,22 +113,27 @@ globals:
   - id: ac_estado
     type: int
     restore_value: yes
-    initial_value: '0'
+    initial_value: "0"
 
   - id: planta_estado
     type: int
     restore_value: yes
-    initial_value: '0'
+    initial_value: "0"
 
   - id: engine_start_timestamp
-    type: uint32_t
+    type: uint64_t
     restore_value: yes
-    initial_value: '0'
+    initial_value: "0"
 
   - id: total_ms_acumulados
-    type: uint32_t
+    type: uint64_t
     restore_value: yes
-    initial_value: '0'
+    initial_value: "0"
+
+  - id: engine_runtime_start
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
 
 # -------- SCRIPT FIREBASE --------
 script:
@@ -142,7 +155,7 @@ script:
 
                   sprintf(
                     buffer,
-                    "{\"Ac\":%d,\"Planta\":%d,\"engineStartTimestamp\":%lu,\"totalMsAcumulados\":%lu}",
+                    "{\"Ac\":%d,\"Planta\":%d,\"engineStartTimestamp\":%llu,\"totalMsAcumulados\":%lu}",
                     id(ac_estado),
                     id(planta_estado),
                     id(engine_start_timestamp),
@@ -151,7 +164,7 @@ script:
 
                   return std::string(buffer);
 
-#---------- SCRIPT CONEXION WIFI ------------------------
+  #---------- SCRIPT CONEXION WIFI ------------------------
   - id: wifi_connecting
     mode: restart
     then:
