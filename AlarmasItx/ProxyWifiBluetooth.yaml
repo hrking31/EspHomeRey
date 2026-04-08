@@ -4,13 +4,11 @@ esphome:
 esp32:
   board: esp32dev
   framework:
-    # type: esp-idf
      type: arduino
-    # version: recommended
 
 wifi:
-  ssid: Fec
-  password: ferrequipos3125
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
 
 # Enable logging
 logger:
@@ -85,7 +83,7 @@ time:
 esp32_ble_tracker:
   scan_parameters:
     active: false
-    interval: 1500ms
+    interval: 1100ms
     window: 100ms
 
   on_ble_service_data_advertise:
@@ -205,6 +203,7 @@ interval:
   # -------- GRAFICA --------
   - interval: 60s
     then:
+      - delay: 30s
       - if:
           condition:
             lambda: |-

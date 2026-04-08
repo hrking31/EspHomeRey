@@ -5,6 +5,7 @@ esp8266:
   board: d1_mini_lite
 
 logger:
+  level: DEBUG
 
 ota:
   - platform: esphome
@@ -37,23 +38,15 @@ web_server:
 # -------- HTTP --------
 http_request:
   useragent: esphome/d1mini
-  timeout: 5s
+  timeout: 3s
   verify_ssl: false
   id: http_request_sala3
 
 # -------- VARIABLES --------
 globals:
-  - id: last_temp
+  - id: last_temp_sent_to_function
     type: float
     initial_value: "NAN"
-
-  - id: last_temp_sent
-    type: float
-    initial_value: "NAN"
-
-  - id: last_temp_change_time
-    type: uint32_t
-    initial_value: "0"
 
   - id: temp_to_send
     type: float
@@ -69,25 +62,10 @@ globals:
     type: std::string
     initial_value: !secret firebase_sala3_grafica
 
-# -------- DHT11 --------
-sensor:
-  - platform: dht
-    pin: D1
-    model: DHT11
-    update_interval: 30s
-
-    temperature:
-      id: temp_dht
-
-    humidity:
-      id: hum_dht
-
 #---------- LED ESTADO WIFI -----------
 output:
   - platform: gpio
-    pin:
-      number: D4
-      # inverted: true
+    pin: D4
     id: wifi_led
 
 light:
@@ -101,25 +79,66 @@ time:
     id: esptime
     timezone: "America/Bogota"
 
+# -------- DHT11 --------
+sensor:
+  - platform: dht
+    pin: D1
+    model: DHT11
+    update_interval: 30s
+    temperature:
+      id: temp_dht
+      filters:
+        - filter_out: NAN
+        - delta: 0.1
+      on_value:
+        then:
+          - lambda: |-
+              id(sensor_ok) = true;
+              id(temp_to_send) = x;
+              id(hum_to_send) = id(hum_dht).state;
+
+              if (std::isnan(id(last_temp_sent_to_function)) || 
+                  std::abs(x - id(last_temp_sent_to_function)) >= 0.5) {
+                
+                id(send_temp_hum).execute();
+                id(last_temp_sent_to_function) = x;
+                ESP_LOGD("custom", "Cambio significativo detectado. Enviando a Firebase...");
+              }
+    humidity:
+      id: hum_dht
+      filters:
+        - filter_out: NAN
+
 # -------- SCRIPT ENVÍO A FIREBASE TEMP Y HUM --------
 script:
   - id: send_temp_hum
-    mode: parallel
+    mode: queued
     then:
-      - http_request.send:
-          id: http_request_sala3
-          method: PATCH
-          url: !secret firebase_sala3_TempHum
-          request_headers:
-            Content-Type: application/json
-          body: !lambda |-
-            char buffer[64];
-            if (isnan(id(temp_to_send))) {
-              sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
-            } else {
-            sprintf(buffer, "{\"temperatura\": %.2f, \"humedad\": %.2f}", id(temp_to_send), id(hum_to_send));
-            }
-            return (std::string) buffer;
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.send:
+                id: http_request_sala3
+                method: PATCH
+                url: !secret firebase_sala3_TempHum
+                request_headers:
+                  Content-Type: application/json
+                body: !lambda |-
+                  char buffer[64];
+
+                  if (std::isnan(id(temp_to_send))) {
+                    sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
+                  } else {
+                    sprintf(
+                      buffer,
+                      "{\"temperatura\": %.2f, \"humedad\": %.2f}",
+                      id(temp_to_send),
+                      id(hum_to_send)
+                    );
+                  }
+
+                  return (std::string) buffer;
 
   #---------- SCRIPT CONEXION WIFI ------------------------
   - id: wifi_connecting
@@ -139,120 +158,70 @@ script:
     then:
       - light.turn_on: wifi_led_light
 
-  - id: wifi_disconnected
-    then:
-      - light.turn_off: wifi_led_light
-
-# -------- LECTURA TEMP Y HUM --------
-interval:
-  - interval: 10s
-    then:
-      - lambda: |-
-          float temp = id(temp_dht).state;
-          float hum  = id(hum_dht).state;
-          bool sensor_error = false;
-
-           // Detectar lectura inválida
-          if (std::isnan(temp)) {
-            sensor_error = true;
-          } 
-          else {
-
-            // Primera lectura válida
-            if (std::isnan(id(last_temp))) {
-              id(last_temp) = temp;
-              id(last_temp_change_time) = millis();
-            }
-
-            // Detectar cambio real de temperatura
-            if (fabs(temp - id(last_temp)) > 0.01) {
-              id(last_temp) = temp;
-              id(last_temp_change_time) = millis();
-            }
-
-            // Sensor congelado si pasaron más de 10 minutos sin cambio
-            if (millis() - id(last_temp_change_time) > 600000) {
-              sensor_error = true;
-            }
-          }
-
-          // Si hay error en sensor
-          if (sensor_error) {
-          if (id(sensor_ok)) {
-          id(sensor_ok) = false;
-            id(temp_to_send) = NAN;
-            id(hum_to_send) = NAN;
-            id(last_temp_sent) = NAN;
-            id(send_temp_hum).execute();
-          }
-          return;
-          }
-
-          if (!id(sensor_ok) || std::isnan(id(last_temp_sent)) || fabs(temp - id(last_temp_sent)) >= 0.5) {
-            id(sensor_ok) = true;
-            id(temp_to_send) = temp;
-            id(hum_to_send) = hum;
-            id(last_temp_sent) = temp;
-            id(send_temp_hum).execute();
-
-            id(last_temp) = temp;
-            id(last_temp_change_time) = millis();
-            }
-
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
-  - interval: 60s
-    then:
-      - http_request.send:
-          method: PATCH
-          url: !secret firebase_sala3_heartbeat
-          request_headers:
-            Content-Type: application/json
-          body: '{"timestamp":{".sv":"timestamp"}}'
-
-  # -------- GRAFICA --------
+interval:
   - interval: 60s
     then:
       - if:
           condition:
-            - lambda: |-
-                return id(sensor_ok);
+            wifi.connected:
           then:
-      - http_request.post:
-          url: !lambda |-
-            auto now = id(esptime).now();
+            - http_request.send:
+                id: http_request_sala3
+                method: PATCH
+                url: !secret firebase_sala3_heartbeat
+                request_headers:
+                  Content-Type: application/json
+                body: '{"timestamp":{".sv":"timestamp"}}'
 
-            char url_buffer[150];
+  # -------- GRAFICA --------
+  - interval: 60s
+    then:
+      - delay: 15s
+      - if:
+          condition:
+            lambda: |-
+              return wifi::global_wifi_component->is_connected() &&
+                     id(sensor_ok) &&
+                     !std::isnan(id(temp_dht).state) &&
+                     id(esptime).now().is_valid();
+          then:
+            - http_request.post:
+                id: http_request_sala3
+                url: !lambda |-
+                  auto now = id(esptime).now();
 
-            sprintf(
-              url_buffer,
-              "%s%04d-%02d-%02d/%02d.json",
-              id(firebase_url_secret).c_str(),
-              now.year,
-              now.month,
-              now.day_of_month,
-              now.hour
-            );
+                  char url_buffer[160];
 
-            return (std::string) url_buffer;
-          request_headers:
-            Content-Type: application/json
+                  sprintf(
+                    url_buffer,
+                    "%s%04d-%02d-%02d/%02d.json",
+                    id(firebase_url_secret).c_str(),
+                    now.year,
+                    now.month,
+                    now.day_of_month,
+                    now.hour
+                  );
 
-          body: !lambda |-
-            float t = id(temp_dht).state;
+                  return std::string(url_buffer);
+                request_headers:
+                  Content-Type: application/json
+                body: !lambda |-
+                  float t = id(temp_dht).state;
+                  time_t now = id(esptime).now().timestamp;
+                  unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
 
-            if (isnan(t)) return std::string("");
+                  char body[64];
+                  snprintf(
+                    body,
+                    sizeof(body),
+                    "{\"t\": %.2f, \"ts\": %llu}",
+                    t,
+                    ts_ms
+                  );
 
-            time_t now = id(esptime).now().timestamp;
-            unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
+                  return std::string(body);
 
-            char body[64];
-            snprintf(
-              body,
-              sizeof(body),
-              "{\"t\": %.2f, \"ts\": %llu}",
-              t,
-              ts_ms
-            );
-            return std::string(body);
+                capture_response: false
 
-          capture_response: false
+

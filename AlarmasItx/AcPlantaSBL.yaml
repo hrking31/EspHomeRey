@@ -102,11 +102,12 @@ binary_sensor:
               if (id(engine_start_timestamp) > 0) {
                 uint32_t tiempo_trabajado = millis() - id(engine_runtime_start);
                 id(total_ms_acumulados) += tiempo_trabajado;
+                id(actualizar_firebase).execute();
+                id(total_ms_acumulados) = 0;
                 id(engine_start_timestamp) = 0;
+                id(engine_runtime_start) = 0;
               }
             }
-
-            id(actualizar_firebase).execute();
 
 # -------- VARIABLES --------
 globals:
@@ -122,12 +123,12 @@ globals:
 
   - id: engine_start_timestamp
     type: uint64_t
-    restore_value: yes
+    restore_value: no
     initial_value: "0"
 
   - id: total_ms_acumulados
     type: uint64_t
-    restore_value: yes
+    restore_value: no
     initial_value: "0"
 
   - id: engine_runtime_start
