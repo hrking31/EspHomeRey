@@ -5,6 +5,8 @@ esp8266:
   board: nodemcuv2
 
 logger:
+  # level: DEBUG
+  level: WARN
 
 ota:
   - platform: esphome
@@ -13,31 +15,22 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-
-  on_connect:
-    then:
-      - script.stop: wifi_connecting
-      - script.execute: wifi_connected
-
-  on_disconnect:
-    then:
-      - script.execute: wifi_connecting
+  min_auth_mode: WPA2
+  reboot_timeout: 0s
 
   ap:
     ssid: "Temperatura SBL"
     password: !secret ap_password
+    ap_timeout: 90s
 
 captive_portal:
-
-web_server:
-  port: 80
 
   # ////////////////////////////////////////////////////////////////////////
 
 # -------- HTTP --------
 http_request:
   useragent: esphome/nodemcu
-  timeout: 5s
+  timeout: 2s
   verify_ssl: false
   id: http_request_sbl
 
@@ -52,7 +45,6 @@ output:
   - platform: gpio
     pin:
       number: 16
-      # inverted: true
     id: wifi_led
 
 light:
@@ -60,13 +52,12 @@ light:
     output: wifi_led
     id: wifi_led_light
 
-# -------- PINES --------
+# -------- PINES AC PLANTA --------
 binary_sensor:
   - platform: gpio
     pin:
       number: 12
       mode: INPUT_PULLUP
-      # inverted: true
     id: ac_pin
     name: "AC Estado"
     on_state:
@@ -79,35 +70,23 @@ binary_sensor:
     pin:
       number: 4
       mode: INPUT_PULLUP
-      # inverted: true
     id: planta_pin
     name: "Planta Estado"
-    on_state:
+    on_press: # Cuando enciende
       then:
         - lambda: |-
-            int nuevo_estado = id(planta_pin).state ? 1 : 0;
-
-            // Planta encendida
-            if (nuevo_estado == 1 && id(planta_estado) == 0) {
-              id(planta_estado) = 1;
-              auto now = id(esptime).now();
-              id(engine_start_timestamp) = (uint64_t) now.timestamp * 1000;
-              id(engine_runtime_start) = millis();
-            }
-
-            // Planta apagada
-            else if (nuevo_estado == 0 && id(planta_estado) == 1) {
-              id(planta_estado) = 0;
-
-              if (id(engine_start_timestamp) > 0) {
-                uint32_t tiempo_trabajado = millis() - id(engine_runtime_start);
-                id(total_ms_acumulados) += tiempo_trabajado;
-                id(actualizar_firebase).execute();
-                id(total_ms_acumulados) = 0;
-                id(engine_start_timestamp) = 0;
-                id(engine_runtime_start) = 0;
-              }
-            }
+            id(planta_estado) = 1;
+            auto now = id(esptime).now();
+            id(engine_start_timestamp) = (uint64_t) now.timestamp * 1000;
+            id(engine_stop_timestamp) = 0;
+            id(actualizar_firebase).execute();
+    on_release: # Cuando apaga
+      then:
+        - lambda: |-
+            id(planta_estado) = 0;
+            auto now = id(esptime).now();
+            id(engine_stop_timestamp) = (uint64_t) now.timestamp * 1000;
+            id(actualizar_firebase).execute();
 
 # -------- VARIABLES --------
 globals:
@@ -126,13 +105,8 @@ globals:
     restore_value: no
     initial_value: "0"
 
-  - id: total_ms_acumulados
+  - id: engine_stop_timestamp
     type: uint64_t
-    restore_value: no
-    initial_value: "0"
-
-  - id: engine_runtime_start
-    type: uint32_t
     restore_value: no
     initial_value: "0"
 
@@ -153,47 +127,57 @@ script:
                   Content-Type: application/json
                 body: !lambda |-
                   char buffer[256];
-
                   sprintf(
                     buffer,
-                    "{\"Ac\":%d,\"Planta\":%d,\"engineStartTimestamp\":%llu,\"totalMsAcumulados\":%lu}",
+                    "{\"Ac\":%d,\"Planta\":%d,\"engineStartTimestamp\":%llu,\"engineStopTimestamp\":%llu}",
                     id(ac_estado),
                     id(planta_estado),
                     id(engine_start_timestamp),
-                    id(total_ms_acumulados)
+                    id(engine_stop_timestamp)
                   );
-
                   return std::string(buffer);
 
-  #---------- SCRIPT CONEXION WIFI ------------------------
-  - id: wifi_connecting
-    mode: restart
+  - id: led_blink_ap
+    mode: restart 
     then:
       - while:
           condition:
-            not:
-              wifi.connected:
+            wifi.ap_active:
           then:
-            - light.turn_on: wifi_led_light
-            - delay: 300ms
-            - light.turn_off: wifi_led_light
-            - delay: 300ms
+            - light.toggle: wifi_led_light
+            - delay: 500ms
+            - lambda: yield();
 
-  - id: wifi_connected
-    then:
-      - light.turn_on: wifi_led_light
-
-  - id: wifi_disconnected
-    then:
-      - light.turn_off: wifi_led_light
-
-# -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
+  # -------- LED INTELIGENTE ESTADO WIFI --------
 interval:
+  - interval: 5s 
+    then:
+      - if:
+          condition:
+            wifi.ap_active:
+          then:
+            - script.execute: led_blink_ap
+          else:
+            - script.stop: led_blink_ap
+            - if:
+                condition:
+                  wifi.connected:
+                then:
+                  - light.turn_on: wifi_led_light
+                else:
+                  - light.turn_off: wifi_led_light
+
+  # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
   - interval: 60s
     then:
-      - http_request.send:
-          method: PATCH
-          url: !secret firebase_sala_sb_heartbeat
-          request_headers:
-            Content-Type: application/json
-          body: '{"timestamp":{".sv":"timestamp"}}'
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.send:
+                id: http_request_sbl
+                method: PATCH
+                url: !secret firebase_sala_sb_heartbeat
+                request_headers:
+                  Content-Type: application/json
+                body: '{"timestamp":{".sv":"timestamp"}}'
