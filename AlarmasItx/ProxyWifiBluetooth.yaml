@@ -10,7 +10,6 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
 
-# Enable logging
 logger:
   level: WARN
 
@@ -26,7 +25,8 @@ web_server:
 # -------- HTTP --------
 http_request:
   useragent: esphome-btproxy
-  timeout: 10s
+  timeout: 3s
+  verify_ssl: false
   id: http_request_sala4
 
 # -------- VARIABLES --------
@@ -83,8 +83,12 @@ time:
 esp32_ble_tracker:
   scan_parameters:
     active: false
-    interval: 1100ms
-    window: 100ms
+    interval: 300ms
+    window: 150ms # Escucha el 50% del tiempo
+    # interval: 100ms
+    # window: 80ms   # Escucha el 80% del tiempo
+    # interval: 1100ms
+    # window: 100ms # Escucha el 9% del tiempo
 
   on_ble_service_data_advertise:
     - mac_address: A4:C1:38:23:79:B1
@@ -132,7 +136,7 @@ script:
           body: !lambda |-
             char buffer[160];
 
-            if (isnan(id(temp_to_send))) {
+            if (std::isnan(id(temp_to_send))) {
               sprintf(buffer,
                 "{\"temperatura\":\"null\", \"humedad\":\"null\", \"bateria\":\"null\", \"estado\": \"offline\"}"
               );
@@ -147,8 +151,8 @@ script:
 
             return std::string(buffer);
 
-interval:
   # -------- VERIFICAR SI SE RECIBEN PAQUETES BLUETOOTH --------
+interval:
   - interval: 10s
     then:
       - lambda: |-
@@ -157,7 +161,7 @@ interval:
           bool sensor_error = false;
 
           // Sensor BLE desconectado
-          if (millis() - id(last_ble_packet) > 90000) {
+          if (millis() - id(last_ble_packet) > 300000) {
             sensor_error = true;
           }
 
@@ -194,6 +198,7 @@ interval:
   - interval: 60s
     then:
       - http_request.send:
+          id: http_request_sala4
           method: PATCH
           url: !secret firebase_sala4_heartbeat
           request_headers:
@@ -203,13 +208,17 @@ interval:
   # -------- GRAFICA --------
   - interval: 60s
     then:
-      - delay: 30s
+      - delay: 15s
       - if:
           condition:
             lambda: |-
-              return id(sensor_ok);
+              return wifi::global_wifi_component->is_connected() &&
+                     id(sensor_ok) &&
+                     !std::isnan(id(temp_to_send)) &&
+                     id(esptime).now().is_valid();
           then:
             - http_request.post:
+                id: http_request_sala4
                 url: !lambda |-
                   auto now = id(esptime).now();
 
@@ -226,13 +235,10 @@ interval:
                   );
 
                   return std::string(url_buffer);
-
                 request_headers:
                   Content-Type: application/json
-
                 body: !lambda |-
                   char body[128];
-
                   sprintf(
                     body,
                     "{\"t\": %.2f, \"ts\": {\".sv\":\"timestamp\"}}",

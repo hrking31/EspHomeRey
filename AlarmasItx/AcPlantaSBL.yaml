@@ -40,6 +40,28 @@ time:
     id: esptime
     timezone: "America/Bogota"
 
+# -------- VARIABLES --------
+globals:
+  - id: ac_estado
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  - id: planta_estado
+    type: int
+    restore_value: yes
+    initial_value: "0"
+
+  - id: engine_start_timestamp
+    type: uint64_t
+    restore_value: no
+    initial_value: "0"
+
+  - id: engine_stop_timestamp
+    type: uint64_t
+    restore_value: no
+    initial_value: "0"
+
 #---------- LED ESTADO WIFI -----------
 output:
   - platform: gpio
@@ -88,28 +110,6 @@ binary_sensor:
             id(engine_stop_timestamp) = (uint64_t) now.timestamp * 1000;
             id(actualizar_firebase).execute();
 
-# -------- VARIABLES --------
-globals:
-  - id: ac_estado
-    type: int
-    restore_value: yes
-    initial_value: "0"
-
-  - id: planta_estado
-    type: int
-    restore_value: yes
-    initial_value: "0"
-
-  - id: engine_start_timestamp
-    type: uint64_t
-    restore_value: no
-    initial_value: "0"
-
-  - id: engine_stop_timestamp
-    type: uint64_t
-    restore_value: no
-    initial_value: "0"
-
 # -------- SCRIPT FIREBASE --------
 script:
   - id: actualizar_firebase
@@ -137,31 +137,19 @@ script:
                   );
                   return std::string(buffer);
 
-  - id: led_blink_ap
-    mode: restart 
-    then:
-      - while:
-          condition:
-            wifi.ap_active:
-          then:
-            - light.toggle: wifi_led_light
-            - delay: 500ms
-            - lambda: yield();
-
   # -------- LED INTELIGENTE ESTADO WIFI --------
 interval:
-  - interval: 5s 
+  - interval: 1000ms
     then:
       - if:
           condition:
-            wifi.ap_active:
+            wifi.ap_active
           then:
-            - script.execute: led_blink_ap
+            - light.toggle: wifi_led_light
           else:
-            - script.stop: led_blink_ap
             - if:
                 condition:
-                  wifi.connected:
+                  wifi.connected
                 then:
                   - light.turn_on: wifi_led_light
                 else:
