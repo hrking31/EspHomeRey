@@ -5,23 +5,14 @@ esp8266:
   board: d1_mini_lite
 
 logger:
-  # level: DEBUG
-  level: WARN
+  level: DEBUG
+  # level: WARN
 
 wifi:
   ssid: "EMMANNETTE"
   password: "22736950"
   min_auth_mode: WPA2
   reboot_timeout: 0s
-
-  on_connect:
-    then:
-      - lambda: |-
-          if (id(sensor_ok) && !std::isnan(id(temp_dht).state)) {
-            id(temp_to_send) = id(temp_dht).state;
-            id(hum_to_send) = id(hum_dht).state;
-            id(send_temp_hum).execute();
-          }
 
   ap:
     ssid: "Temperatura sala_3"
@@ -44,6 +35,14 @@ globals:
   - id: last_temp_sent_to_function
     type: float
     initial_value: "NAN"
+
+  - id: last_hum_sent_to_function
+    type: float
+    initial_value: "NAN"
+
+  - id: last_hum_valid
+    type: float
+    initial_value: '0'
 
   - id: temp_to_send
     type: float
@@ -92,13 +91,29 @@ sensor:
               bool recuperado = !id(sensor_ok);
               id(sensor_ok) = true;
               id(temp_to_send) = x;
-              id(hum_to_send) = id(hum_dht).state;
+              if (!std::isnan(id(hum_dht).state)) {
+              id(last_hum_valid) = id(hum_dht).state;
+              }
+              id(hum_to_send) = id(last_hum_valid);
 
-              float diferencia = std::abs(x - id(last_temp_sent_to_function));
+              float diff_temp = std::abs(x - id(last_temp_sent_to_function));
+              float diff_hum = std::abs(id(hum_to_send) - id(last_hum_sent_to_function));
 
-              if (recuperado || std::isnan(id(last_temp_sent_to_function)) || diferencia >= 0.3) {
+              ESP_LOGW("debug", "x=%.2f lastTemp=%.2f dTemp=%.2f hum=%.2f lastHum=%.2f dHum=%.2f rec=%d",
+                x,
+                id(last_temp_sent_to_function),
+                diff_temp,
+                id(hum_to_send),
+                id(last_hum_sent_to_function),
+                diff_hum,
+                recuperado);
+
+              if (recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 1.0) {
+                if (wifi::global_wifi_component->is_connected()) {
                   id(send_temp_hum).execute();
                   id(last_temp_sent_to_function) = x;
+                  id(last_hum_sent_to_function) = id(hum_to_send);
+                }
               }
 
       on_raw_value:
@@ -147,7 +162,7 @@ script:
                       id(hum_to_send)
                     );
                   }
-
+                  ESP_LOGW("debug_body", "%s", buffer);
                   return (std::string) buffer;
 
   # -------- LED INTELIGENTE ESTADO WIFI --------
