@@ -181,9 +181,9 @@ interval:
           condition:
             lambda: |-
               return wifi::global_wifi_component->is_connected() &&
-                     id(sensor_ok) &&
-                     !std::isnan(id(temp_dht).state) &&
-                     id(esptime).now().is_valid();
+                    id(sensor_ok) &&
+                    !std::isnan(id(temp_dht).state) &&
+                    id(esptime).now().is_valid();
           then:
             - http_request.post:
                 id: http_request_sala1

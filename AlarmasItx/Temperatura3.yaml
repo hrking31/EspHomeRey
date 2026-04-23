@@ -5,12 +5,12 @@ esp8266:
   board: d1_mini_lite
 
 logger:
-  level: DEBUG
-  # level: WARN
+  # level: DEBUG
+  level: WARN
 
 wifi:
-  ssid: "EMMANNETTE"
-  password: "22736950"
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
   min_auth_mode: WPA2
   reboot_timeout: 0s
 
@@ -26,7 +26,7 @@ captive_portal:
 # -------- HTTP --------
 http_request:
   useragent: esphome/d1mini
-  timeout: 3s
+  timeout: 2s
   verify_ssl: false
   id: http_request_sala3
 
@@ -42,7 +42,12 @@ globals:
 
   - id: last_hum_valid
     type: float
-    initial_value: '0'
+    initial_value: "0"
+
+  - id: error_enviado
+    type: bool
+    restore_value: no
+    initial_value: "false"
 
   - id: temp_to_send
     type: float
@@ -90,6 +95,7 @@ sensor:
           - lambda: |-
               bool recuperado = !id(sensor_ok);
               id(sensor_ok) = true;
+              id(error_enviado) = false;
               id(temp_to_send) = x;
               if (!std::isnan(id(hum_dht).state)) {
               id(last_hum_valid) = id(hum_dht).state;
@@ -99,16 +105,18 @@ sensor:
               float diff_temp = std::abs(x - id(last_temp_sent_to_function));
               float diff_hum = std::abs(id(hum_to_send) - id(last_hum_sent_to_function));
 
-              ESP_LOGW("debug", "x=%.2f lastTemp=%.2f dTemp=%.2f hum=%.2f lastHum=%.2f dHum=%.2f rec=%d",
-                x,
-                id(last_temp_sent_to_function),
-                diff_temp,
-                id(hum_to_send),
-                id(last_hum_sent_to_function),
-                diff_hum,
-                recuperado);
+              // ESP_LOGW("debug", "x=%.2f lastTemp=%.2f dTemp=%.2f hum=%.2f lastHum=%.2f dHum=%.2f rec=%d",
+              //   x,
+              //   id(last_temp_sent_to_function),
+              //   diff_temp,
+              //   id(hum_to_send),
+              //   id(last_hum_sent_to_function),
+              //   diff_hum,
+              //   recuperado);
 
-              if (recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 1.0) {
+              bool tiene_humedad = !std::isnan(id(hum_dht).state);
+
+              if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
                 if (wifi::global_wifi_component->is_connected()) {
                   id(send_temp_hum).execute();
                   id(last_temp_sent_to_function) = x;
@@ -119,13 +127,16 @@ sensor:
       on_raw_value:
         then:
           - lambda: |-
+              // ESP_LOGD("rastro", "Raw: %.2f | ErrorEnviado: %d | SensorOK: %d | WiFi: %d", x, id(error_enviado), id(sensor_ok), wifi::global_wifi_component->is_connected());
               if (std::isnan(x)) {
-                if (id(sensor_ok) || std::isnan(id(last_temp_sent_to_function))) {
+                if (!id(error_enviado)) {
                   id(sensor_ok) = false;
                   id(temp_to_send) = NAN;
                   id(hum_to_send) = NAN;
-                  id(last_temp_sent_to_function) = NAN;
-                  id(send_temp_hum).execute();
+                  if (wifi::global_wifi_component->is_connected()) {
+                    id(send_temp_hum).execute();
+                    id(error_enviado) = true;
+                  }
                 }
               }
 
@@ -151,7 +162,6 @@ script:
                   Content-Type: application/json
                 body: !lambda |-
                   char buffer[64];
-
                   if (std::isnan(id(temp_to_send))) {
                     sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
                   } else {
@@ -162,7 +172,7 @@ script:
                       id(hum_to_send)
                     );
                   }
-                  ESP_LOGW("debug_body", "%s", buffer);
+                  // ESP_LOGW("debug_body", "%s", buffer);
                   return (std::string) buffer;
 
   # -------- LED INTELIGENTE ESTADO WIFI --------
@@ -186,7 +196,8 @@ interval:
     then:
       - if:
           condition:
-            wifi.connected:
+            lambda: |-
+              return wifi::global_wifi_component->is_connected();
           then:
             - http_request.send:
                 id: http_request_sala3
@@ -204,9 +215,9 @@ interval:
           condition:
             lambda: |-
               return wifi::global_wifi_component->is_connected() &&
-                     id(sensor_ok) &&
-                     !std::isnan(id(temp_dht).state) &&
-                     id(esptime).now().is_valid();
+                    id(sensor_ok) &&
+                    !std::isnan(id(temp_dht).state) &&
+                    id(esptime).now().is_valid();
           then:
             - http_request.post:
                 id: http_request_sala3
