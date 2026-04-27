@@ -5,8 +5,8 @@ esp8266:
   board: d1_mini_lite
 
 logger:
-  # level: DEBUG
-  level: WARN
+  level: DEBUG
+  # level: WARN
 
 wifi:
   ssid: !secret wifi_ssid
@@ -89,7 +89,13 @@ sensor:
     temperature:
       id: temp_dht
       filters:
+        - lambda: |-
+            ESP_LOGD("PASO_1", "Sensor DHT envió: %.2f", x);
+            return x;
         - filter_out: NAN
+        - lambda: |-
+            ESP_LOGD("PASO_2", "Pasó filtros. Nuevo state será: %.2f", x);
+            return x;
       on_value:
         then:
           - lambda: |-
@@ -105,6 +111,15 @@ sensor:
               float diff_temp = std::abs(x - id(last_temp_sent_to_function));
               float diff_hum = std::abs(id(hum_to_send) - id(last_hum_sent_to_function));
 
+                ESP_LOGW("debug", "x=%.2f lastTemp=%.2f dTemp=%.2f hum=%.2f lastHum=%.2f dHum=%.2f rec=%d",
+                  x,
+                  id(last_temp_sent_to_function),
+                  diff_temp,
+                  id(hum_to_send),
+                  id(last_hum_sent_to_function),
+                  diff_hum,
+                  recuperado);
+
               bool tiene_humedad = !std::isnan(id(hum_dht).state);
 
               if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
@@ -118,6 +133,7 @@ sensor:
       on_raw_value:
         then:
           - lambda: |-
+              ESP_LOGD("rastro", "Raw: %.2f | ErrorEnviado: %d | SensorOK: %d | WiFi: %d", x, id(error_enviado), id(sensor_ok), wifi::global_wifi_component->is_connected());
               if (std::isnan(x)) {
                 if (!id(error_enviado)) {
                   id(sensor_ok) = false;
@@ -162,12 +178,14 @@ script:
                       id(hum_to_send)
                     );
                   }
+                  ESP_LOGW("debug_body", "%s", buffer);
                   return (std::string) buffer;
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
   - id: enviar_vivo
     mode: single
     then:
+      - lambda: 'ESP_LOGI("VIVO", "Iniciando envío de Heartbeat...");'
       - http_request.send:
           id: http_request_sala3
           method: PATCH
@@ -175,11 +193,13 @@ script:
           request_headers:
             Content-Type: application/json
           body: '{"timestamp":{".sv":"timestamp"}}'
+      - lambda: 'ESP_LOGI("VIVO", "Envío de Heartbeat finalizado.");'
 
   # -------- GRÁFICA --------
   - id: enviar_grafica
     mode: single
     then:
+      - lambda: 'ESP_LOGI("GRAFICA", "Iniciando envío de Gráfica...");'
       - http_request.post:
           id: http_request_sala3
           url: !lambda |-
@@ -201,8 +221,20 @@ script:
           request_headers:
             Content-Type: application/json
           body: !lambda |-
+            //float t = id(temp_dht).state;
             time_t now = id(esptime).now().timestamp;
             unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
+
+            // char body[64];
+            // snprintf(
+            //   body,
+            //   sizeof(body),
+            //   "{\"t\": %.2f, \"ts\": %llu}",
+            //   t,
+            //   ts_ms
+            // );
+
+            // return std::string(body);
 
             char buffer[128];
 
@@ -224,8 +256,8 @@ script:
             return (std::string) buffer;
 
           capture_response: false
+      - lambda: 'ESP_LOGI("GRAFICA", "Envío de Gráfica finalizado.");'
 
-# -------- INTERVALO PARA LED WIFI Y ENVÍO DE DATOS --------
 interval:
   - interval: 1s
     then:
