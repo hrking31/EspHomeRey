@@ -26,7 +26,7 @@ captive_portal:
 # -------- HTTP --------
 http_request:
   useragent: esphome/d1mini
-  timeout: 2s
+  timeout: 5s
   verify_ssl: false
   id: http_request_sala3
 
@@ -108,11 +108,9 @@ sensor:
               bool tiene_humedad = !std::isnan(id(hum_dht).state);
 
               if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
-                if (wifi::global_wifi_component->is_connected()) {
                   id(send_temp_hum).execute();
                   id(last_temp_sent_to_function) = x;
                   id(last_hum_sent_to_function) = id(hum_to_send);
-                }
               }
 
       on_raw_value:
@@ -123,10 +121,8 @@ sensor:
                   id(sensor_ok) = false;
                   id(temp_to_send) = NAN;
                   id(hum_to_send) = NAN;
-                  if (wifi::global_wifi_component->is_connected()) {
-                    id(send_temp_hum).execute();
-                    id(error_enviado) = true;
-                  }
+                  id(send_temp_hum).execute();
+                  id(error_enviado) = true;
                 }
               }
 
@@ -140,29 +136,25 @@ script:
   - id: send_temp_hum
     mode: restart
     then:
-      - if:
-          condition:
-            wifi.connected:
-          then:
-            - http_request.send:
-                id: http_request_sala3
-                method: PATCH
-                url: !secret firebase_sala3_TempHum
-                request_headers:
-                  Content-Type: application/json
-                body: !lambda |-
-                  char buffer[64];
-                  if (std::isnan(id(temp_to_send))) {
-                    sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
-                  } else {
-                    sprintf(
-                      buffer,
-                      "{\"temperatura\": %.2f, \"humedad\": %.2f}",
-                      id(temp_to_send),
-                      id(hum_to_send)
-                    );
-                  }
-                  return (std::string) buffer;
+      - http_request.send:
+          id: http_request_sala3
+          method: PATCH
+          url: !secret firebase_sala3_TempHum
+          request_headers:
+            Content-Type: application/json
+          body: !lambda |-
+            char buffer[64];
+            if (std::isnan(id(temp_to_send))) {
+              sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
+            } else {
+              sprintf(
+                buffer,
+                "{\"temperatura\": %.2f, \"humedad\": %.2f}",
+                id(temp_to_send),
+                id(hum_to_send)
+              );
+            }
+            return (std::string) buffer;
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
   - id: enviar_vivo
@@ -184,9 +176,7 @@ script:
           id: http_request_sala3
           url: !lambda |-
             auto now = id(esptime).now();
-
             char url_buffer[160];
-
             sprintf(
               url_buffer,
               "%s%04d-%02d-%02d/%02d.json",
@@ -201,28 +191,20 @@ script:
           request_headers:
             Content-Type: application/json
           body: !lambda |-
+            float t = id(temp_dht).state;
             time_t now = id(esptime).now().timestamp;
             unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
 
-            char buffer[128];
+            char body[64];
+            snprintf(
+              body,
+              sizeof(body),
+              "{\"t\": %.2f, \"ts\": %llu}",
+              t,
+              ts_ms
+            );
 
-            if (!id(sensor_ok) || std::isnan(id(temp_dht).state)) {
-              sprintf(
-                buffer, 
-                "{\"t\": \"null\", \"ts\": %llu, \"status\": \"sensor_error\"}", 
-                ts_ms
-              );
-            } else {
-              sprintf(
-                buffer,
-                "{\"t\": %.2f, \"ts\": %llu}",
-                id(temp_dht).state,
-                ts_ms
-              );
-            }
-
-            return (std::string) buffer;
-
+            return std::string(body);
           capture_response: false
 
 # -------- INTERVALO PARA LED WIFI Y ENVÍO DE DATOS --------
@@ -239,12 +221,14 @@ interval:
             id(wifi_led_light).turn_on().perform();
           } 
           else if (wifi::global_wifi_component->is_ap_active()) {
-            if (contador_led % 2 == 0) {
+            if (contador_led % 1 == 0) {
               id(wifi_led_light).toggle().perform();
             } 
           }
           else {
-            id(wifi_led_light).toggle().perform();
+            if (contador_led % 3 == 0) {
+              id(wifi_led_light).toggle().perform();
+            }
           }
 
           auto now = id(esptime).now();
@@ -256,15 +240,12 @@ interval:
 
           int seg_actual = contador_envios;
 
-          if (wifi::global_wifi_component->is_connected()) {
-
           if (seg_actual == 15) {
-           // if (!std::isnan(id(temp_dht).state) && !id(sensor_ok)) {
+            if (id(sensor_ok) && now.is_valid()) {
               id(enviar_grafica).execute();
-            //}
+            }
           } 
 
           if (seg_actual == 45) {
               id(enviar_vivo).execute();
             }
-          }
