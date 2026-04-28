@@ -1,5 +1,8 @@
 esphome:
   name: temperatura-sala3
+  on_boot:
+    then:
+      - script.execute: wifi_status
 
 esp8266:
   board: d1_mini_lite
@@ -14,6 +17,15 @@ wifi:
   min_auth_mode: WPA2
   reboot_timeout: 0s
 
+  on_connect:
+    then:
+      - script.stop: wifi_status
+      - script.execute: wifi_connected
+
+  on_disconnect:
+    then:
+      - script.execute: wifi_status
+
   ap:
     ssid: "Temperatura sala_3"
     password: !secret ap_password
@@ -26,7 +38,7 @@ captive_portal:
 # -------- HTTP --------
 http_request:
   useragent: esphome/d1mini
-  timeout: 5s
+  timeout: 3s
   verify_ssl: false
   id: http_request_sala3
 
@@ -134,118 +146,122 @@ sensor:
 # -------- SCRIPT ENVÍO A FIREBASE TEMP Y HUM --------
 script:
   - id: send_temp_hum
+    mode: queued
+    then:
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.send:
+                id: http_request_sala3
+                method: PATCH
+                url: !secret firebase_sala3_TempHum
+                request_headers:
+                  Content-Type: application/json
+                body: !lambda |-
+                  char buffer[64];
+                  if (std::isnan(id(temp_to_send))) {
+                    sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
+                  } else {
+                    sprintf(
+                      buffer,
+                      "{\"temperatura\": %.2f, \"humedad\": %.2f}",
+                      id(temp_to_send),
+                      id(hum_to_send)
+                    );
+                  }
+                  return (std::string) buffer;
+
+  #---------- SCRIPT CONEXIÓN WIFI ------------------------
+  - id: wifi_status
     mode: restart
     then:
-      - http_request.send:
-          id: http_request_sala3
-          method: PATCH
-          url: !secret firebase_sala3_TempHum
-          request_headers:
-            Content-Type: application/json
-          body: !lambda |-
-            char buffer[64];
-            if (std::isnan(id(temp_to_send))) {
-              sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
-            } else {
-              sprintf(
-                buffer,
-                "{\"temperatura\": %.2f, \"humedad\": %.2f}",
-                id(temp_to_send),
-                id(hum_to_send)
-              );
-            }
-            return (std::string) buffer;
+      - while:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - if:
+                condition:
+                  wifi.ap_active
+                then:
+                  - light.turn_on: wifi_led_light
+                  - delay: 800ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 800ms
+                else:
+                  - light.turn_on: wifi_led_light
+                  - delay: 200ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 200ms
+
+  - id: wifi_connected
+    then:
+      - light.turn_on: wifi_led_light
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
-  - id: enviar_vivo
-    mode: single
-    then:
-      - http_request.send:
-          id: http_request_sala3
-          method: PATCH
-          url: !secret firebase_sala3_heartbeat
-          request_headers:
-            Content-Type: application/json
-          body: '{"timestamp":{".sv":"timestamp"}}'
-
-  # -------- GRÁFICA --------
-  - id: enviar_grafica
-    mode: single
-    then:
-      - http_request.post:
-          id: http_request_sala3
-          url: !lambda |-
-            auto now = id(esptime).now();
-            char url_buffer[160];
-            sprintf(
-              url_buffer,
-              "%s%04d-%02d-%02d/%02d.json",
-              id(firebase_url_secret).c_str(),
-              now.year,
-              now.month,
-              now.day_of_month,
-              now.hour
-            );
-
-            return std::string(url_buffer);
-          request_headers:
-            Content-Type: application/json
-          body: !lambda |-
-            float t = id(temp_dht).state;
-            time_t now = id(esptime).now().timestamp;
-            unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
-
-            char body[64];
-            snprintf(
-              body,
-              sizeof(body),
-              "{\"t\": %.2f, \"ts\": %llu}",
-              t,
-              ts_ms
-            );
-
-            return std::string(body);
-          capture_response: false
-
-# -------- INTERVALO PARA LED WIFI Y ENVÍO DE DATOS --------
 interval:
-  - interval: 1s
+  - interval: 60s
     then:
-      - lambda: |-
-          static int contador_led = 0;
-          static int contador_envios = 0;
-          contador_led++;
-          if (contador_led >= 120) contador_led = 0;
+      - delay: 45s
+      - if:
+          condition:
+            wifi.connected:
+          then:
+            - http_request.send:
+                id: http_request_sala3
+                method: PATCH
+                url: !secret firebase_sala3_heartbeat
+                request_headers:
+                  Content-Type: application/json
+                body: '{"timestamp":{".sv":"timestamp"}}'
 
-          if (wifi::global_wifi_component->is_connected()) {
-            id(wifi_led_light).turn_on().perform();
-          } 
-          else if (wifi::global_wifi_component->is_ap_active()) {
-            if (contador_led % 1 == 0) {
-              id(wifi_led_light).toggle().perform();
-            } 
-          }
-          else {
-            if (contador_led % 3 == 0) {
-              id(wifi_led_light).toggle().perform();
-            }
-          }
+  # -------- GRAFICA --------
+  - interval: 60s
+    then:
+      - delay: 15s
+      - if:
+          condition:
+            lambda: |-
+              return wifi::global_wifi_component->is_connected() &&
+                    id(sensor_ok) &&
+                    !std::isnan(id(temp_dht).state) &&
+                    id(esptime).now().is_valid();
+          then:
+            - http_request.post:
+                id: http_request_sala3
+                url: !lambda |-
+                  auto now = id(esptime).now();
 
-          auto now = id(esptime).now();
-          if (now.is_valid()) { contador_envios = now.second;
-          } else {
-            contador_envios++;
-            if (contador_envios >= 60) contador_envios = 0;
-          }
+                  char url_buffer[160];
 
-          int seg_actual = contador_envios;
+                  sprintf(
+                    url_buffer,
+                    "%s%04d-%02d-%02d/%02d.json",
+                    id(firebase_url_secret).c_str(),
+                    now.year,
+                    now.month,
+                    now.day_of_month,
+                    now.hour
+                  );
 
-          if (seg_actual == 15) {
-            if (id(sensor_ok) && now.is_valid()) {
-              id(enviar_grafica).execute();
-            }
-          } 
+                  return std::string(url_buffer);
+                request_headers:
+                  Content-Type: application/json
+                body: !lambda |-
+                  float t = id(temp_dht).state;
+                  time_t now = id(esptime).now().timestamp;
+                  unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
 
-          if (seg_actual == 45) {
-              id(enviar_vivo).execute();
-            }
+                  char body[64];
+                  snprintf(
+                    body,
+                    sizeof(body),
+                    "{\"t\": %.2f, \"ts\": %llu}",
+                    t,
+                    ts_ms
+                  );
+
+                  return std::string(body);
+
+                capture_response: false
