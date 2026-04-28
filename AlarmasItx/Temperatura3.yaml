@@ -120,9 +120,11 @@ sensor:
               bool tiene_humedad = !std::isnan(id(hum_dht).state);
 
               if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
+                if (wifi::global_wifi_component->is_connected()) {
                   id(send_temp_hum).execute();
                   id(last_temp_sent_to_function) = x;
                   id(last_hum_sent_to_function) = id(hum_to_send);
+                }
               }
 
       on_raw_value:
@@ -133,10 +135,13 @@ sensor:
                   id(sensor_ok) = false;
                   id(temp_to_send) = NAN;
                   id(hum_to_send) = NAN;
-                  id(send_temp_hum).execute();
-                  id(error_enviado) = true;
+                  if (wifi::global_wifi_component->is_connected()) {
+                    id(send_temp_hum).execute();
+                    id(error_enviado) = true;
+                  }
                 }
               }
+              
 
     humidity:
       id: hum_dht
