@@ -97,7 +97,7 @@ sensor:
   - platform: dht
     pin: D1
     model: DHT11
-    update_interval: 30s
+    update_interval: 60s
     temperature:
       id: temp_dht
       filters:
@@ -119,6 +119,8 @@ sensor:
 
               bool tiene_humedad = !std::isnan(id(hum_dht).state);
 
+              id(send_to_graph).execute();
+
               if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
                 if (wifi::global_wifi_component->is_connected()) {
                   id(send_temp_hum).execute();
@@ -130,6 +132,7 @@ sensor:
       on_raw_value:
         then:
           - lambda: |-
+              id(send_heartbeat).execute();
               if (std::isnan(x)) {
                 if (!id(error_enviado)) {
                   id(sensor_ok) = false;
@@ -177,38 +180,10 @@ script:
                   }
                   return (std::string) buffer;
 
-  #---------- SCRIPT CONEXIÓN WIFI ------------------------
-  - id: wifi_status
+  # -------- SCRIPT ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
+  - id: send_heartbeat
     mode: restart
     then:
-      - while:
-          condition:
-            not:
-              wifi.connected:
-          then:
-            - if:
-                condition:
-                  wifi.ap_active
-                then:
-                  - light.turn_on: wifi_led_light
-                  - delay: 800ms
-                  - light.turn_off: wifi_led_light
-                  - delay: 800ms
-                else:
-                  - light.turn_on: wifi_led_light
-                  - delay: 200ms
-                  - light.turn_off: wifi_led_light
-                  - delay: 200ms
-
-  - id: wifi_connected
-    then:
-      - light.turn_on: wifi_led_light
-
-  # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
-interval:
-  - interval: 60s
-    then:
-      - delay: 45s
       - if:
           condition:
             wifi.connected:
@@ -221,10 +196,10 @@ interval:
                   Content-Type: application/json
                 body: '{"timestamp":{".sv":"timestamp"}}'
 
-  # -------- GRAFICA --------
-  - interval: 60s
+  # -------- SCRIPT ENVÍO A FIREBASE GRÁFICA --------
+  - id: send_to_graph
+    mode: queued
     then:
-      - delay: 15s
       - if:
           condition:
             lambda: |-
@@ -270,3 +245,31 @@ interval:
                   return std::string(body);
 
                 capture_response: false
+
+  #---------- SCRIPT CONEXIÓN WIFI ------------------------
+  - id: wifi_status
+    mode: restart
+    then:
+      - while:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - if:
+                condition:
+                  wifi.ap_active
+                then:
+                  - light.turn_on: wifi_led_light
+                  - delay: 800ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 800ms
+                else:
+                  - light.turn_on: wifi_led_light
+                  - delay: 200ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 200ms
+
+  - id: wifi_connected
+    then:
+      - light.turn_on: wifi_led_light
+
