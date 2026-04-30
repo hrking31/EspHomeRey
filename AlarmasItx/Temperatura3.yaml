@@ -105,21 +105,21 @@ sensor:
       on_value:
         then:
           - lambda: |-
-              bool recuperado = !id(sensor_ok);
               id(sensor_ok) = true;
               id(error_enviado) = false;
               id(temp_to_send) = x;
+
               if (!std::isnan(id(hum_dht).state)) {
-              id(last_hum_valid) = id(hum_dht).state;
+                id(last_hum_valid) = id(hum_dht).state;
               }
               id(hum_to_send) = id(last_hum_valid);
 
+              id(send_to_graph).execute();
+
+              bool recuperado = !id(sensor_ok);
               float diff_temp = std::abs(x - id(last_temp_sent_to_function));
               float diff_hum = std::abs(id(hum_to_send) - id(last_hum_sent_to_function));
-
               bool tiene_humedad = !std::isnan(id(hum_dht).state);
-
-              id(send_to_graph).execute();
 
               if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
                 if (wifi::global_wifi_component->is_connected()) {
@@ -198,15 +198,12 @@ script:
 
   # -------- SCRIPT ENVÍO A FIREBASE GRÁFICA --------
   - id: send_to_graph
-    mode: queued
+    mode: restart
     then:
       - if:
           condition:
             lambda: |-
-              return wifi::global_wifi_component->is_connected() &&
-                    id(sensor_ok) &&
-                    !std::isnan(id(temp_dht).state) &&
-                    id(esptime).now().is_valid();
+              return wifi::global_wifi_component->is_connected() && id(esptime).now().is_valid();
           then:
             - http_request.post:
                 id: http_request_sala3
@@ -229,7 +226,7 @@ script:
                 request_headers:
                   Content-Type: application/json
                 body: !lambda |-
-                  float t = id(temp_dht).state;
+                  float t = id(temp_to_send);
                   time_t now = id(esptime).now().timestamp;
                   unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
 
