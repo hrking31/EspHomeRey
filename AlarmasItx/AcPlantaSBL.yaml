@@ -1,5 +1,8 @@
 esphome:
   name: ac-planta-sbl
+  on_boot:
+    then:
+      - script.execute: wifi_status
 
 esp8266:
   board: nodemcuv2
@@ -8,20 +11,27 @@ logger:
   # level: DEBUG
   level: WARN
 
-ota:
-  - platform: esphome
-    password: !secret ota_password
-
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   min_auth_mode: WPA2
-  reboot_timeout: 0s
+  reboot_timeout: 1min
+
+  fast_connect: true
+
+  on_connect:
+    then:
+      - script.stop: wifi_status
+      - script.execute: wifi_connected
+
+  on_disconnect:
+    then:
+      - script.execute: wifi_status
 
   ap:
     ssid: "Temperatura SBL"
     password: !secret ap_password
-    ap_timeout: 90s
+    ap_timeout: 1min
 
 captive_portal:
 
@@ -30,7 +40,7 @@ captive_portal:
 # -------- HTTP --------
 http_request:
   useragent: esphome/nodemcu
-  timeout: 2s
+  timeout: 3s
   verify_ssl: false
   id: http_request_sbl
 
@@ -137,25 +147,35 @@ script:
                   );
                   return std::string(buffer);
 
-  # -------- LED INTELIGENTE ESTADO WIFI --------
-interval:
-  - interval: 1000ms
+  #---------- SCRIPT CONEXIÓN WIFI ------------------------
+  - id: wifi_status
+    mode: restart
     then:
-      - if:
+      - while:
           condition:
-            wifi.ap_active
+            not:
+              wifi.connected:
           then:
-            - light.toggle: wifi_led_light
-          else:
             - if:
                 condition:
-                  wifi.connected
+                  wifi.ap_active
                 then:
                   - light.turn_on: wifi_led_light
-                else:
+                  - delay: 800ms
                   - light.turn_off: wifi_led_light
+                  - delay: 800ms
+                else:
+                  - light.turn_on: wifi_led_light
+                  - delay: 200ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 200ms
+
+  - id: wifi_connected
+    then:
+      - light.turn_on: wifi_led_light
 
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
+interval:
   - interval: 60s
     then:
       - if:

@@ -1,10 +1,13 @@
 esphome:
   name: bluetooth-proxy-esp32
+  on_boot:
+    then:
+      - script.execute: wifi_status
 
 esp32:
   board: esp32dev
   framework:
-     type: arduino
+    type: arduino
 
 logger:
   # level: DEBUG
@@ -14,12 +17,23 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   min_auth_mode: WPA2
-  reboot_timeout: 0s
+  reboot_timeout: 1min
+
+  fast_connect: true
+
+  on_connect:
+    then:
+      - script.stop: wifi_status
+      - script.execute: wifi_connected
+
+  on_disconnect:
+    then:
+      - script.execute: wifi_status
 
   ap:
     ssid: "Temperatura sala_4"
     password: !secret ap_password
-    ap_timeout: 90s
+    ap_timeout: 1min
 
 captive_portal:
 
@@ -34,10 +48,6 @@ http_request:
 
 # -------- VARIABLES --------
 globals:
-  - id: last_temp
-    type: float
-    initial_value: "NAN"
-
   - id: temp_to_send
     type: float
     restore_value: no
@@ -53,28 +63,26 @@ globals:
     restore_value: no
     initial_value: "NAN"
 
-  - id: last_temp_change_time
-    type: uint32_t
-    initial_value: "0"
-
   - id: last_ble_packet
     type: uint32_t
     restore_value: no
     initial_value: "0"
 
-  - id: sensor_ok
-    type: bool
-    restore_value: no
-    initial_value: "false"
-
-  - id: last_temp_sent
-    type: float
-    restore_value: no
-    initial_value: "NAN"
-
   - id: firebase_url_secret
     type: std::string
     initial_value: !secret firebase_sala4_grafica
+
+#---------- LED ESTADO WIFI -----------
+output:
+  - platform: gpio
+    pin: GPIO2
+    id: wifi_led
+    inverted: true
+
+light:
+  - platform: binary
+    output: wifi_led
+    id: wifi_led_light
 
 # -------- TIME --------
 time:
@@ -125,10 +133,22 @@ esp32_ble_tracker:
               }
             }
 
+interval:
+  - interval: 60s
+    then:
+      - if:
+          condition:
+            lambda: |-
+              return wifi::global_wifi_component->is_connected() && id(esptime).now().is_valid();
+          then:
+            - script.execute: send_temp_hum
+            - script.execute: send_heartbeat
+            - script.execute: send_to_graph
+
 # -------- SCRIPT ENVÍO A FIREBASE TEMP Y HUM --------
 script:
   - id: send_temp_hum
-    mode: parallel
+    mode: queued
     then:
       - http_request.send:
           id: http_request_sala4
@@ -154,51 +174,9 @@ script:
 
             return std::string(buffer);
 
-  # -------- VERIFICAR SI SE RECIBEN PAQUETES BLUETOOTH --------
-interval:
-  - interval: 10s
-    then:
-      - lambda: |-
-          float temp = id(temp_to_send);
-          float hum  = id(hum_to_send);
-          bool sensor_error = false;
-
-          // Sensor BLE desconectado
-          if (millis() - id(last_ble_packet) > 300000) {
-            sensor_error = true;
-          }
-
-          // Lectura inválida
-          if (std::isnan(temp)) {
-            sensor_error = true;
-          }
-
-          // Si hay error
-          if (sensor_error) {
-          if (id(sensor_ok)) {
-          id(sensor_ok) = false;
-            id(temp_to_send) = NAN;
-            id(hum_to_send)  = NAN;
-            id(last_temp_sent) = NAN;
-            id(send_temp_hum).execute();
-          }
-          return;
-          }
-
-          // Sensor funcionando
-           if (!id(sensor_ok) || std::isnan(id(last_temp_sent)) || fabs(temp - id(last_temp_sent)) >= 0.5) {
-            id(sensor_ok) = true;
-            id(temp_to_send) = temp;
-            id(hum_to_send) = hum;
-            id(last_temp_sent) = temp;
-            id(send_temp_hum).execute();
-
-            id(last_temp) = temp;
-            id(last_temp_change_time) = millis();
-            }
-
   # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
-  - interval: 60s
+  - id: send_heartbeat
+    mode: restart
     then:
       - http_request.send:
           id: http_request_sala4
@@ -209,43 +187,70 @@ interval:
           body: '{"timestamp":{".sv":"timestamp"}}'
 
   # -------- GRAFICA --------
-  - interval: 60s
+  - id: send_to_graph
+    mode: restart
     then:
-      - delay: 15s
-      - if:
+      - http_request.post:
+          id: http_request_sala4
+          url: !lambda |-
+            auto now = id(esptime).now();
+
+            char url_buffer[160];
+
+            sprintf(
+              url_buffer,
+              "%s%04d-%02d-%02d/%02d.json",
+              id(firebase_url_secret).c_str(),
+              now.year,
+              now.month,
+              now.day_of_month,
+              now.hour
+            );
+
+            return std::string(url_buffer);
+          request_headers:
+            Content-Type: application/json
+          body: !lambda |-
+            float t = id(temp_to_send);
+            time_t now = id(esptime).now().timestamp;
+            unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
+
+            char body[64];
+            snprintf(
+              body,
+              sizeof(body),
+              "{\"t\": %.2f, \"ts\": %llu}",
+              t,
+              ts_ms
+            );
+
+            return std::string(body);
+
+          capture_response: false
+
+  #---------- SCRIPT CONEXIÓN WIFI ------------------------
+  - id: wifi_status
+    mode: restart
+    then:
+      - while:
           condition:
-            lambda: |-
-              return wifi::global_wifi_component->is_connected() &&
-                     id(sensor_ok) &&
-                     !std::isnan(id(temp_to_send)) &&
-                     id(esptime).now().is_valid();
+            not:
+              wifi.connected:
           then:
-            - http_request.post:
-                id: http_request_sala4
-                url: !lambda |-
-                  auto now = id(esptime).now();
+            - if:
+                condition:
+                  wifi.ap_active
+                then:
+                  - light.turn_on: wifi_led_light
+                  - delay: 800ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 800ms
+                else:
+                  - light.turn_on: wifi_led_light
+                  - delay: 200ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 200ms
 
-                  char url_buffer[200];
-
-                  sprintf(
-                    url_buffer,
-                    "%s%04d-%02d-%02d/%02d.json",
-                    id(firebase_url_secret).c_str(),
-                    now.year,
-                    now.month,
-                    now.day_of_month,
-                    now.hour
-                  );
-
-                  return std::string(url_buffer);
-                request_headers:
-                  Content-Type: application/json
-                body: !lambda |-
-                  char body[128];
-                  sprintf(
-                    body,
-                    "{\"t\": %.2f, \"ts\": {\".sv\":\"timestamp\"}}",
-                    id(temp_to_send)
-                  );
-
-                  return std::string(body);
+  - id: wifi_connected
+    then:
+      - light.turn_on: wifi_led_light

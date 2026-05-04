@@ -1,5 +1,8 @@
 esphome:
   name: temperatura-sala1
+  on_boot:
+    then:
+      - script.execute: wifi_status
 
 esp8266:
   board: d1_mini_lite
@@ -8,29 +11,27 @@ logger:
   # level: DEBUG
   level: WARN
 
-ota:
-  - platform: esphome
-    password: !secret ota_password
-
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   min_auth_mode: WPA2
-  reboot_timeout: 0s
+  reboot_timeout: 1min
+
+  fast_connect: true
 
   on_connect:
     then:
-      - lambda: |-
-          if (id(sensor_ok) && !std::isnan(id(temp_dht).state)) {
-            id(temp_to_send) = id(temp_dht).state;
-            id(hum_to_send) = id(hum_dht).state;
-            id(send_temp_hum).execute();
-          }
+      - script.stop: wifi_status
+      - script.execute: wifi_connected
+
+  on_disconnect:
+    then:
+      - script.execute: wifi_status
 
   ap:
     ssid: "Temperatura sala_1"
     password: !secret ap_password
-    ap_timeout: 90s
+    ap_timeout: 1min
 
 captive_portal:
 
@@ -49,6 +50,19 @@ globals:
     type: float
     initial_value: "NAN"
 
+  - id: last_hum_sent_to_function
+    type: float
+    initial_value: "NAN"
+
+  - id: last_hum_valid
+    type: float
+    initial_value: "0"
+
+  - id: error_enviado
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
   - id: temp_to_send
     type: float
 
@@ -61,7 +75,7 @@ globals:
 
   - id: firebase_url_secret
     type: std::string
-    initial_value: !secret firebase_sala3_grafica
+    initial_value: !secret firebase_sala1_grafica
 
 #---------- LED ESTADO WIFI -----------
 output:
@@ -85,24 +99,55 @@ sensor:
   - platform: dht
     pin: D1
     model: DHT11
-    update_interval: 30s
+    update_interval: 60s
     temperature:
       id: temp_dht
       filters:
         - filter_out: NAN
-        - delta: 0.1
       on_value:
         then:
           - lambda: |-
               id(sensor_ok) = true;
+              id(error_enviado) = false;
               id(temp_to_send) = x;
-              id(hum_to_send) = id(hum_dht).state;
 
-              if (std::isnan(id(last_temp_sent_to_function)) || 
-                  std::abs(x - id(last_temp_sent_to_function)) >= 0.3) {
-                  id(send_temp_hum).execute();
-                id(last_temp_sent_to_function) = x;
+              if (!std::isnan(id(hum_dht).state)) {
+                id(last_hum_valid) = id(hum_dht).state;
               }
+              id(hum_to_send) = id(last_hum_valid);
+
+              id(send_to_graph).execute();
+
+              bool recuperado = !id(sensor_ok);
+              float diff_temp = std::abs(x - id(last_temp_sent_to_function));
+              float diff_hum = std::abs(id(hum_to_send) - id(last_hum_sent_to_function));
+              bool tiene_humedad = !std::isnan(id(hum_dht).state);
+
+              if (tiene_humedad &&(recuperado || std::isnan(id(last_temp_sent_to_function)) || diff_temp >= 0.3 || diff_hum >= 3.0)) {
+                if (wifi::global_wifi_component->is_connected()) {
+                  id(send_temp_hum).execute();
+                  id(last_temp_sent_to_function) = x;
+                  id(last_hum_sent_to_function) = id(hum_to_send);
+                }
+              }
+
+      on_raw_value:
+        then:
+          - lambda: |-
+              id(send_heartbeat).execute();
+              if (std::isnan(x)) {
+                if (!id(error_enviado)) {
+                  id(sensor_ok) = false;
+                  id(temp_to_send) = NAN;
+                  id(hum_to_send) = NAN;
+                  if (wifi::global_wifi_component->is_connected()) {
+                    id(send_temp_hum).execute();
+                    id(error_enviado) = true;
+                  }
+                }
+              }
+              
+
     humidity:
       id: hum_dht
       filters:
@@ -111,7 +156,7 @@ sensor:
 # -------- SCRIPT ENVÍO A FIREBASE TEMP Y HUM --------
 script:
   - id: send_temp_hum
-    mode: restart 
+    mode: queued
     then:
       - if:
           condition:
@@ -125,7 +170,6 @@ script:
                   Content-Type: application/json
                 body: !lambda |-
                   char buffer[64];
-
                   if (std::isnan(id(temp_to_send))) {
                     sprintf(buffer, "{\"temperatura\": \"null\", \"humedad\": \"null\"}");
                   } else {
@@ -136,30 +180,12 @@ script:
                       id(hum_to_send)
                     );
                   }
-
                   return (std::string) buffer;
 
 
-  # -------- LED INTELIGENTE ESTADO WIFI --------
-interval:
-  - interval: 1000ms
-    then:
-      - if:
-          condition:
-            wifi.ap_active
-          then:
-            - light.toggle: wifi_led_light
-          else:
-            - if:
-                condition:
-                  wifi.connected
-                then:
-                  - light.turn_on: wifi_led_light
-                else:
-                  - light.turn_off: wifi_led_light
-
-  # -------- ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
-  - interval: 60s
+  # -------- SCRIPT ENVÍO A FIREBASE HEARTBEAT (SIGUE VIVO) --------
+  - id: send_heartbeat
+    mode: restart
     then:
       - if:
           condition:
@@ -173,17 +199,14 @@ interval:
                   Content-Type: application/json
                 body: '{"timestamp":{".sv":"timestamp"}}'
 
-  # -------- GRAFICA --------
-  - interval: 60s
+  # -------- SCRIPT ENVÍO A FIREBASE GRÁFICA --------
+  - id: send_to_graph
+    mode: restart
     then:
-      - delay: 15s
       - if:
           condition:
             lambda: |-
-              return wifi::global_wifi_component->is_connected() &&
-                    id(sensor_ok) &&
-                    !std::isnan(id(temp_dht).state) &&
-                    id(esptime).now().is_valid();
+              return wifi::global_wifi_component->is_connected() && id(esptime).now().is_valid();
           then:
             - http_request.post:
                 id: http_request_sala1
@@ -206,7 +229,7 @@ interval:
                 request_headers:
                   Content-Type: application/json
                 body: !lambda |-
-                  float t = id(temp_dht).state;
+                  float t = id(temp_to_send);
                   time_t now = id(esptime).now().timestamp;
                   unsigned long long ts_ms = (unsigned long long) now * 1000ULL;
 
@@ -222,3 +245,30 @@ interval:
                   return std::string(body);
 
                 capture_response: false
+
+  #---------- SCRIPT CONEXIÓN WIFI ------------------------
+  - id: wifi_status
+    mode: restart
+    then:
+      - while:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - if:
+                condition:
+                  wifi.ap_active
+                then:
+                  - light.turn_on: wifi_led_light
+                  - delay: 800ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 800ms
+                else:
+                  - light.turn_on: wifi_led_light
+                  - delay: 200ms
+                  - light.turn_off: wifi_led_light
+                  - delay: 200ms
+
+  - id: wifi_connected
+    then:
+      - light.turn_on: wifi_led_light
